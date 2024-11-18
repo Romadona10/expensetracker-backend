@@ -74,11 +74,33 @@ const UserSettingsSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   currency: { type: String, default: '$' },
   notifications: { type: Boolean, default: true },
-  reminderFrequency: { type: String, enum: ['daily', 'weekly', 'monthly'], default: 'daily' },
-  userBudget:{type: Number,default:1000000}
+  reminderFrequency: { type: String, enum: ['frequently','daily', 'weekly', 'monthly'], default: 'frequently' },
+  monthlyBudget: { type: Number, default: 100000 },   // New field for monthly budget
+  annualBudget: { type: Number, default: 1200000 }    // New field for annual budget
 });
 
 const UserSettings = mongoose.model('UserSettings', UserSettingsSchema);
+
+//Notifications model
+
+const NotificationSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  message: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+});
+
+const Notification = mongoose.model('Notification', NotificationSchema);
+
+//Income model
+
+const IncomeSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  date: { type: Date, required: true },
+  amount: { type: Number, required: true },
+  type: { type: String, enum: ['monthly', 'annual'], required: true },
+  description: { type: String},
+});
+const Income = mongoose.model('Income', IncomeSchema);
 
 
 // Ensure uploads directory exists
@@ -172,35 +194,7 @@ app.get('/api/auth/admin/users', async (req, res) => {
 });
 
 
-// app.get('/api/auth/profile', async (req, res) => {
-//   const authHeader = req.headers['authorization'];
 
-//   if (!authHeader) {
-//     return res.status(401).json({ message: 'No token provided' });
-//   }
-
-//   // Check if the token includes the "Bearer" prefix and extract the JWT
-//   const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
-
-//   jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here', async (err, decoded) => {
-//     if (err) {
-//       return res.status(403).json({ message: 'Failed to authenticate token' });
-//     }
-
-//     try {
-//       // Token is valid; find and return the user profile without the password field
-//       const user = await User.findById(decoded.userId).select('-password');
-//       if (!user) {
-//         return res.status(404).json({ message: 'User not found' });
-//       }
-
-//       res.status(200).json(user);
-//     } catch (error) {
-//       console.error('Error fetching user profile:', error);
-//       res.status(500).json({ message: 'Server error' });
-//     }
-//   });
-// });
 
 app.get('/api/auth/profile', async (req, res) => {
   const authHeader = req.headers['authorization'];
@@ -253,33 +247,9 @@ app.put('/api/auth/update-status/:id', async (req, res) => {
   }
 });
 
-// Add a new expense
-// app.post('/api/expenses/add/:userId', async (req, res) => {
-//   const token = req.headers['authorization'];
-//   if (!token) return res.status(401).json({ message: 'No token provided' });
 
-//   jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here', async (err, decoded) => {
-//     if (err) return res.status(403).json({ message: 'Failed to authenticate token' });
 
-//     const { date, category, description, amount } = req.body;
 
-//     try {
-//       const expense = new Expense({
-//         userId: decoded.userId, // use decoded userId
-//         date,
-//         category,
-//         description,
-//         amount
-//       });
-
-//       await expense.save();
-//       res.status(201).json({ message: 'Expense added successfully', expense });
-//     } catch (error) {
-//       console.error("Error adding expense:", error);
-//       res.status(500).json({ message: 'Failed to add expense' });
-//     }
-//   });
-// });
 
 app.post('/api/expenses/add', async (req, res) => {
   const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
@@ -291,23 +261,76 @@ app.post('/api/expenses/add', async (req, res) => {
     const { date, category, description, amount } = req.body;
 
     try {
-      const expense = new Expense({
-        userId: decoded.userId, // use decoded userId directly
-        date,
-        category,
-        description,
-        amount
-      });
+      const userId = decoded.userId; // Extracted userId from token
 
-     
+      // Create the new expense
+      const expense = new Expense({ userId, date, category, description, amount });
       await expense.save();
-      res.status(201).json({ message: 'Expense added successfully', expense });
+
+      // Fetch user settings for budgets and notifications
+      const userSettings = await UserSettings.findOne({ userId });
+
+      if (!userSettings) {
+        return res.status(404).json({ message: 'User settings not found' });
+      }
+
+      const notifications = [];
+      const now = new Date();
+
+      // Calculate monthly and annual expenses
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+      const monthlyExpenses = await Expense.aggregate([
+        { $match: { userId: decoded.userId, date: { $gte: startOfMonth } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+
+      const annualExpenses = await Expense.aggregate([
+        { $match: { userId: decoded.userId, date: { $gte: startOfYear } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+
+      const totalMonthly = monthlyExpenses[0]?.total || 0;
+      const totalAnnual = annualExpenses[0]?.total || 0;
+
+      // Check if monthly budget is exceeded
+      if (totalMonthly > userSettings.monthlyBudget) {
+        const message = `Alert: You have exceeded your monthly budget of ${userSettings.currency} ${userSettings.monthlyBudget}.`;
+        const notification = new Notification({ userId, message });
+        await notification.save();
+        notifications.push(notification);
+      }
+
+      // Check if annual budget is exceeded
+      if (totalAnnual > userSettings.annualBudget) {
+        const message = `Alert: You have exceeded your annual budget of ${userSettings.currency} ${userSettings.annualBudget}.`;
+        const notification = new Notification({ userId, message });
+        await notification.save();
+        notifications.push(notification);
+      }
+
+      // Optional: Check frequency and send additional reminders if required (daily, weekly, etc.)
+      if (userSettings.notifications && notifications.length === 0) {
+        const message = `New expense added: ${category} - ${description} for ${userSettings.currency}${amount}.`;
+        const notification = new Notification({ userId, message });
+        await notification.save();
+        notifications.push(notification);
+      }
+
+      // Return the added expense and any notifications
+      res.status(201).json({
+        message: 'Expense added successfully',
+        expense,
+        notifications,
+      });
     } catch (error) {
-      console.error("Error adding expense:", error);
+      console.error('Error adding expense and generating notifications:', error);
       res.status(500).json({ message: 'Failed to add expense' });
     }
   });
 });
+
 
 // Expenses-list API
 app.get('/monthly/:userId',  async (req, res) => {
@@ -493,41 +516,63 @@ app.get('/api/expenses/annual-expenses/:userId', async (req, res) => {
 
 app.get('/api/expenses/:userId/:duration', async (req, res) => {
   const { userId, duration } = req.params;
-  
-  // Determine the date range based on the duration
   let startDate;
   const endDate = new Date(); // Current date
 
-  switch (duration) {
-    case 'daily':
-      startDate = new Date();
-      startDate.setHours(0, 0, 0, 0); // Start of the day
-      break;
-    case 'weekly':
-      startDate = new Date();
-      startDate.setDate(endDate.getDate() - 7); // Start of the last 7 days
-      break;
-    case 'monthly':
-      startDate = new Date();
-      startDate.setDate(1); // Start of the current month
-      break;
-    default:
-      return res.status(400).json({ message: 'Invalid duration specified' });
-  }
-
   try {
+    // Determine the date range or handle "frequently"
+    if (duration === 'frequently') {
+      // Fetch the most recent expense
+      const expenses = await Expense.find({ userId }).sort({ date: -1 }).limit(1); // Most recent expense
+
+      // Generate a notification for the most recent expense
+      const notifications = expenses.map(expense => ({
+        message: `New expense added: ${expense.category} - ${expense.description} for ₦${expense.amount}.`,
+        timestamp: expense.date
+      }));
+
+      return res.json({ expenses, notifications }); // Return expenses and notifications together
+    }
+
+    // Handle other durations (daily, weekly, monthly)
+    switch (duration) {
+      case 'daily':
+        startDate = new Date();
+        startDate.setHours(0, 0, 0, 0); // Start of the day
+        break;
+      case 'weekly':
+        startDate = new Date();
+        startDate.setDate(endDate.getDate() - 7); // Start of the last 7 days
+        break;
+      case 'monthly':
+        startDate = new Date();
+        startDate.setDate(1); // Start of the current month
+        break;
+      default:
+        return res.status(400).json({ message: 'Invalid duration specified' });
+    }
+
     // Fetch expenses by userId and within the specified date range
     const expenses = await Expense.find({
       userId,
       date: { $gte: startDate, $lt: endDate }
     });
 
-    res.json(expenses);
+    // Generate notifications for the fetched expenses
+    const notifications = expenses.map(expense => ({
+      message: `New expense added: ${expense.category} - ${expense.description} for ₦${expense.amount}.`,
+      timestamp: expense.date
+    }));
+
+    res.json({ expenses, notifications }); // Return expenses and notifications together
   } catch (error) {
     console.error('Error fetching expenses by duration:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+
+
 
 // Category Endpoints
 
@@ -602,18 +647,127 @@ app.get('/api/user-settings/:userId', async (req, res) => {
 });
 
 // Update settings for a user
+
 app.put('/api/user-settings/:userId', async (req, res) => {
   try {
     const updatedSettings = await UserSettings.findOneAndUpdate(
       { userId: req.params.userId },
-      req.body,
+      {
+        ...req.body,  // This will handle monthlyBudget and annualBudget updates
+        monthlyBudget: req.body.monthlyBudget,
+        annualBudget: req.body.annualBudget
+      },
       { new: true, upsert: true }
     );
     res.json(updatedSettings);
   } catch (error) {
+    console.error('Error updating user settings:', error);
     res.status(500).json({ message: 'Error updating user settings' });
   }
 });
+
+
+// Add new income entry (monthly or annual)
+app.post('/api/income/add', async (req, res) => {
+  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'No token provided' });
+
+  jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here', async (err, decoded) => {
+    if (err) return res.status(403).json({ message: 'Failed to authenticate token' });
+
+    const { date, amount, type,description } = req.body;
+
+    try {
+      const income = new Income({
+        userId: decoded.userId,
+        date,
+        amount,
+        type,
+        description
+      });
+
+      await income.save();
+      res.status(201).json({ message: 'Income added successfully', income });
+    } catch (error) {
+      console.error("Error adding income:", error);
+      res.status(500).json({ message: 'Failed to add income' });
+    }
+  });
+});
+
+// Get monthly income for a user
+app.get('/api/income/monthly/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { month, year } = req.query;
+
+  try {
+    const monthlyIncome = await Income.find({
+      userId: new mongoose.Types.ObjectId(userId),
+      type: 'monthly',
+      date: {
+        $gte: new Date(`${year}-${month}-01`),
+        $lt: new Date(`${year}-${parseInt(month) + 1}-01`)
+      }
+    }).sort({ date: 1 }); // Sort by date ascending
+
+    const result = monthlyIncome.length > 0 ? monthlyIncome : [];
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching monthly income:", error);
+    res.status(500).json({ message: 'Failed to fetch monthly income' });
+  }
+});
+
+// Get annual income records for a user
+app.get('/api/income/annual/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { year } = req.query;
+
+  try {
+    const annualIncome = await Income.find({
+      userId: new mongoose.Types.ObjectId(userId),
+      type: 'annual',
+      date: {
+        $gte: new Date(`${year}-01-01`),
+        $lt: new Date(`${parseInt(year) + 1}-01-01`)
+      }
+    }).sort({ date: 1 }); // Sort by date ascending
+
+    const result = annualIncome.length > 0 ? annualIncome : [];
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching annual income:", error);
+    res.status(500).json({ message: 'Failed to fetch annual income' });
+  }
+});
+
+//notifications
+
+app.get('/api/notifications/:userId', async (req, res) => {
+  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'No token provided' });
+
+  jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here', async (err, decoded) => {
+    if (err) return res.status(403).json({ message: 'Failed to authenticate token' });
+
+    const { userId } = req.params;
+
+    if (decoded.userId !== userId) {
+      return res.status(403).json({ message: 'Unauthorized access' });
+    }
+
+    try {
+      const notifications = await Notification.find({ userId }).sort({ createdAt: -1 });
+      res.status(200).json({ notifications }); // Return notifications as an object with a "notifications" key
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      res.status(500).json({ message: 'Failed to fetch notifications' });
+    }
+  });
+});
+
+
+
 
 
 
