@@ -55,7 +55,7 @@ const UserSchema = new mongoose.Schema({
   picture: String,
   isAdmin: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
-  picture: { type: String }
+  
 });
 
 const User = mongoose.model('User', UserSchema);
@@ -158,7 +158,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
   const token = jwt.sign({ userId: user._id, isAdmin: user.isAdmin }, process.env.JWT_SECRET || 'your_jwt_secret_here', { expiresIn: '1h' });
-  res.json({ token, isAdmin: user.isAdmin, userId: user._id ,picture: user.picture});
+  res.json({ token, isAdmin: user.isAdmin, userId: user._id ,picture: user.picture,fullName: user.fullName});
  
 });
 
