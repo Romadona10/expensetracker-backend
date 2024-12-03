@@ -376,25 +376,29 @@ app.get('/monthly/:userId',  async (req, res) => {
 // monthly expenses API
 app.get('/api/expenses/monthly/:userId', async (req, res) => {
   const { userId } = req.params;
-  const { month, year } = req.query; // e.g., month=3, year=2024
-  
+  const { month, year } = req.query; // e.g., month=12, year=2024
+
   try {
+    const startDate = new Date(`${year}-${month}-01`);
+    
+    // Calculate end date: next month (or January of the next year if month is December)
+    const nextMonth = parseInt(month) + 1;
+    const nextYear = nextMonth > 12 ? parseInt(year) + 1 : year;
+    const endDate = new Date(`${nextYear}-${nextMonth > 12 ? 1 : nextMonth}-01`);
+
     const monthlyExpenses = await Expense.aggregate([
       { 
         $match: { 
           userId: new mongoose.Types.ObjectId(userId), 
-          date: {
-            $gte: new Date(`${year}-${month}-01`),
-            $lt: new Date(`${year}-${parseInt(month) + 1}-01`)
-          } 
-        } 
+          date: { $gte: startDate, $lt: endDate }
+        }
       },
       { $sort: { date: 1 } }, // Sort by date
       {
         $group: {
           _id: null, // Group all expenses for the specified month
           totalAmount: { $sum: "$amount" },
-          expenses: { $push: { date: "$date", category: "$category", description:"$description", amount: "$amount" } }
+          expenses: { $push: { date: "$date", category: "$category", description: "$description", amount: "$amount" } }
         }
       }
     ]);
@@ -408,26 +412,74 @@ app.get('/api/expenses/monthly/:userId', async (req, res) => {
   }
 });
 
+
 // End Of Monthly Expenses API
 
 // start of monthly report
 
+// app.get('/api/expenses/report/monthly/:userId', async (req, res) => {
+//   const { userId } = req.params;
+//   const { month, year } = req.query; // e.g., month=3, year=2024
+  
+//   try {
+//     const monthlyExpenses = await Expense.aggregate([
+//       { 
+//         $match: { 
+//           userId: new mongoose.Types.ObjectId(userId), 
+//           date: {
+//             $gte: new Date(`${year}-${month}-01`),
+//             $lt: new Date(`${year}-${parseInt(month) + 1}-01`)
+//           } 
+//         } 
+//       },
+//       { 
+//         $group: {
+//           _id: "$category", // Group by category for chart data
+//           totalAmount: { $sum: "$amount" }
+//         }
+//       }
+//     ]);
+
+//     // Calculate total expenses for the month
+//     const totalAmount = monthlyExpenses.reduce((sum, item) => sum + item.totalAmount, 0);
+
+//     // Format response for chart.js
+//     const response = {
+//       labels: monthlyExpenses.map(item => item._id), // Categories as labels
+//       data: monthlyExpenses.map(item => item.totalAmount), // Amounts as data points
+//       total: totalAmount
+//     };
+
+//     res.json(response);
+//   } catch (err) {
+//     console.error("Error fetching monthly report:", err);
+//     res.status(500).send('Error fetching monthly report');
+//   }
+// });
+
 app.get('/api/expenses/report/monthly/:userId', async (req, res) => {
   const { userId } = req.params;
   const { month, year } = req.query; // e.g., month=3, year=2024
-  
+
   try {
+    const currentMonth = parseInt(month);  // Convert month to an integer
+    const currentYear = parseInt(year);
+
+    // Calculate the next month and next year for $lt comparison
+    const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
+    const nextYear = currentMonth === 12 ? currentYear + 1 : currentYear;
+
     const monthlyExpenses = await Expense.aggregate([
-      { 
-        $match: { 
-          userId: new mongoose.Types.ObjectId(userId), 
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
           date: {
-            $gte: new Date(`${year}-${month}-01`),
-            $lt: new Date(`${year}-${parseInt(month) + 1}-01`)
-          } 
-        } 
+            $gte: new Date(`${currentYear}-${currentMonth}-01`),
+            $lt: new Date(`${nextYear}-${nextMonth}-01`)
+          }
+        }
       },
-      { 
+      {
         $group: {
           _id: "$category", // Group by category for chart data
           totalAmount: { $sum: "$amount" }
@@ -451,6 +503,7 @@ app.get('/api/expenses/report/monthly/:userId', async (req, res) => {
     res.status(500).send('Error fetching monthly report');
   }
 });
+
 
 
 
@@ -701,12 +754,23 @@ app.get('/api/income/monthly/:userId', async (req, res) => {
   const { month, year } = req.query;
 
   try {
+    const startDate = new Date(`${year}-${month}-01`);
+    let endDate;
+
+    if (parseInt(month) === 12) {
+      // If the month is December, set the end date to January 1st of the next year
+      endDate = new Date(`${parseInt(year) + 1}-01-01`);
+    } else {
+      // Otherwise, set the end date to the first day of the next month
+      endDate = new Date(`${year}-${parseInt(month) + 1}-01`);
+    }
+
     const monthlyIncome = await Income.find({
       userId: new mongoose.Types.ObjectId(userId),
       type: 'monthly',
       date: {
-        $gte: new Date(`${year}-${month}-01`),
-        $lt: new Date(`${year}-${parseInt(month) + 1}-01`)
+        $gte: startDate,
+        $lt: endDate
       }
     }).sort({ date: 1 }); // Sort by date ascending
 
@@ -717,6 +781,7 @@ app.get('/api/income/monthly/:userId', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch monthly income' });
   }
 });
+
 
 // Get annual income records for a user
 app.get('/api/income/annual/:userId', async (req, res) => {
